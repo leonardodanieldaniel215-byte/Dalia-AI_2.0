@@ -91,7 +91,7 @@ def analizar_imagen(imagen_b64, prompt=""):
         texto = prompt if prompt else "Analiza esta imagen detalladamente y describe todo lo que ves."
 
         response = client.chat.completions.create(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",  # Usando tu modelo exacto
+            model="llama-3.2-11b-vision-preview",  # <-- Asegúrate de tener un modelo de visión válido aquí en Groq
             max_tokens=1000,
             messages=[
                 {"role": "system", "content": system},
@@ -214,10 +214,15 @@ with col4:
 st.markdown(f"<p style='text-align: center; color: #a78bfa;'>MODO ACTUAL: {st.session_state.modo_actual.upper()}</p>",
             unsafe_allow_html=True)
 
-# Historial
+# Historial (limpiando el bloque de búsqueda para que se vea bonito en pantalla)
 for msj in st.session_state.historiales[st.session_state.modo_actual]:
     with st.chat_message(msj["role"]):
-        st.markdown(msj["content"])
+        contenido = msj["content"]
+        if msj["role"] == "user" and "[Información de internet" in contenido:
+            partes = contenido.split("Leonardo: ")
+            if len(partes) > 1:
+                contenido = partes[-1]
+        st.markdown(contenido)
 
 # Uploader Dinámico
 imagen_adjunta = st.file_uploader("📷 Adjunta imagen", type=["jpg", "png", "jpeg"],
@@ -226,60 +231,59 @@ imagen_adjunta = st.file_uploader("📷 Adjunta imagen", type=["jpg", "png", "jp
 if prompt := st.chat_input("Dime algo, Leonardo..."):
     tiene_foto = imagen_adjunta is not None
 
+    # 1. Mostrar mensaje del usuario
     with st.chat_message("user"):
         st.markdown(prompt)
         if tiene_foto: st.image(imagen_adjunta, width=300)
 
-    # Preparar el contexto
     contexto_extra = ""
     fuentes_encontradas = []
     imagen_internet_obj = None
     respuesta_dalia = ""
 
-    # Evaluar imagen subida
-    if tiene_foto:
-        img_pil = Image.open(imagen_adjunta)
-        b64 = encode_image_pil(img_pil)
-        st.info("Analizando la imagen...")
-        respuesta_dalia = analizar_imagen(b64, prompt)
-        st.session_state.uploader_key += 1  # Limpia el recuadro
-        agregar_al_historial("user", prompt)  # Solo guardamos el texto
+    # 2. Procesar y Mostrar respuesta del asistente
+    with st.chat_message("assistant"):
+        if tiene_foto:
+            img_pil = Image.open(imagen_adjunta)
+            b64 = encode_image_pil(img_pil)
+            with st.spinner("Analizando la imagen..."):
+                respuesta_dalia = analizar_imagen(b64, prompt)
 
-    # Evaluar búsqueda de imagen en internet
-    elif necesita_imagen_internet(prompt):
-        query_img = extraer_query_imagen(prompt)
-        st.info(f"Buscando imagen de: {query_img}...")
-        img, fuente = buscar_imagen_internet(query_img)
-        if img:
-            respuesta_dalia = f"Aquí está la imagen de: {query_img} 🔍"
-            imagen_internet_obj = img
+            st.markdown(respuesta_dalia)
+            st.session_state.uploader_key += 1
+            agregar_al_historial("user", prompt)
+
+        elif necesita_imagen_internet(prompt):
+            query_img = extraer_query_imagen(prompt)
+            with st.spinner(f"Buscando imagen de: {query_img}..."):
+                img, fuente = buscar_imagen_internet(query_img)
+
+            if img:
+                respuesta_dalia = f"Aquí está la imagen de: {query_img} 🔍"
+                imagen_internet_obj = img
+            else:
+                respuesta_dalia = "No encontré ninguna imagen de eso, intenta con otras palabras."
+
+            st.markdown(respuesta_dalia)
+            if imagen_internet_obj:
+                st.image(imagen_internet_obj)
+            agregar_al_historial("user", prompt)
+
         else:
-            respuesta_dalia = "No encontré ninguna imagen de eso, intenta con otras palabras."
-        agregar_al_historial("user", prompt)
+            if st.session_state.modo_actual == "normal" and necesita_buscar(prompt):
+                query = extraer_query(prompt)
+                with st.spinner(f"Buscando en internet sobre: {query}..."):
+                    info, fuentes_encontradas = buscar_internet(query)
+                    if info:
+                        contexto_extra = f"[Información de internet sobre '{query}']:\n{info}\n\nAnaliza bien toda esta información antes de responder.\n\n"
 
-    # Evaluar búsqueda de texto en internet
-    else:
-        if st.session_state.modo_actual == "normal" and necesita_buscar(prompt):
-            query = extraer_query(prompt)
-            st.info(f"Buscando en internet sobre: {query}...")
-            info, fuentes_encontradas = buscar_internet(query)
-            if info:
-                contexto_extra = f"[Información de internet sobre '{query}']:\n{info}\n\nAnaliza bien toda esta información antes de responder.\n\n"
+            mensaje_final = f"{contexto_extra}Leonardo: {prompt}"
+            agregar_al_historial("user", mensaje_final)
 
-        mensaje_final = f"{contexto_extra}Leonardo: {prompt}"
-        agregar_al_historial("user", mensaje_final)
+            modo = st.session_state.modo_actual
+            system = INSTRUCCION_MATEMATICA if modo == "matematica" else INSTRUCCION_CODE if modo == "code" else INSTRUCCION_NORMAL
+            max_tok = 1200 if modo in ("matematica", "code") else 600
 
-        modo = st.session_state.modo_actual
-        if modo == "matematica":
-            system = INSTRUCCION_MATEMATICA
-        elif modo == "code":
-            system = INSTRUCCION_CODE
-        else:
-            system = INSTRUCCION_NORMAL
-
-        max_tok = 1200 if modo in ("matematica", "code") else 600
-
-        with st.chat_message("assistant"):
             with st.spinner("Dalia está escribiendo..."):
                 response = client.chat.completions.create(
                     model="llama-3.3-70b-versatile",
@@ -291,25 +295,22 @@ if prompt := st.chat_input("Dime algo, Leonardo..."):
                 )
                 respuesta_dalia = response.choices[0].message.content.strip()
 
-    # Mostrar respuesta si no se mostró arriba (cuando no es texto normal)
-    if tiene_foto or necesita_imagen_internet(prompt):
-        with st.chat_message("assistant"):
-            st.markdown(respuesta_dalia)
-            if imagen_internet_obj:
-                st.image(imagen_internet_obj)
+            st.markdown(respuesta_dalia)  # ¡AQUÍ ESTABA EL ERROR! Ya está corregido.
 
+        # Mostrar fuentes si existen
+        if fuentes_encontradas:
+            st.caption("🔍 Fuentes: " + " | ".join(fuentes_encontradas))
+
+        # Audio (Ahora se genera y reproduce sin recargar la página para que no se corte)
+        if st.session_state.voz_activa and respuesta_dalia:
+            archivo_audio = asyncio.run(generar_audio(respuesta_dalia))
+            if archivo_audio:
+                st.audio(archivo_audio, format="audio/mp3", autoplay=True)
+                if os.path.exists(archivo_audio): os.remove(archivo_audio)
+
+    # 3. Guardar la respuesta al final
     agregar_al_historial("assistant", respuesta_dalia)
 
-    # Fuentes
-    if fuentes_encontradas:
-        st.caption("🔍 Fuentes: " + " | ".join(fuentes_encontradas))
-
-    # Reproducción de voz (Adaptada para web)
-    if st.session_state.voz_activa:
-        archivo_audio = asyncio.run(generar_audio(respuesta_dalia))
-        if archivo_audio:
-            st.audio(archivo_audio, format="audio/mp3", autoplay=True)
-            # Limpiar el archivo para no saturar el servidor
-            if os.path.exists(archivo_audio): os.remove(archivo_audio)
-
-    if tiene_foto: st.rerun()
+    # 4. Refrescar SOLO si mandaste foto para limpiar la caja de subir archivos
+    if tiene_foto:
+        st.rerun()
