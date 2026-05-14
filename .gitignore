@@ -1,0 +1,16 @@
+# Secretos (¡Súper importante!)
+.streamlit/
+secrets.toml
+
+# Basura de Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# Archivos temporales de voz
+*.mp3
+
+# Carpetas de PyCharm
+.idea/
