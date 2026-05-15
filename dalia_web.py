@@ -4,14 +4,13 @@ import os
 import edge_tts
 import base64
 import time
-import requests
 from PIL import Image
 from io import BytesIO
 from groq import Groq
-from duckduckgo_search import DDGS  # Optimizado para la versión actual
+from duckduckgo_search import DDGS
 
 # ============================================================
-# CONFIGURACIÓN (Optimizada para la nube)
+# CONFIGURACIÓN Y LLAVES
 # ============================================================
 st.set_page_config(page_title="Dalia AI", page_icon="🤖", layout="centered")
 
@@ -20,49 +19,73 @@ VOZ_HUMANA = "es-MX-DaliaNeural"
 client = Groq(api_key=GROQ_API_KEY)
 
 # ============================================================
-# ESTADOS DE SESIÓN (Reemplazan las listas globales de Tkinter)
+# SISTEMA DE ACCESO SECRETO (LOGIN)
 # ============================================================
+# Aquí defines las contraseñas y a quién pertenecen
+USUARIOS = {
+    "leo123": "Leonardo",
+    "chris123": "Christian",
+    "manu123": "Manuel"
+}
+
+if "autenticado" not in st.session_state:
+    st.session_state.autenticado = False
+    st.session_state.usuario_nombre = ""
+
+# Si no están autenticados, solo ven esta pantalla
+if not st.session_state.autenticado:
+    st.markdown("<h2 style='text-align: center; color: #a78bfa;'>🔐 Acceso a Dalia AI</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center;'>Ingresa tu código para hablar con Dalia.</p>", unsafe_allow_html=True)
+
+    codigo = st.text_input("Código secreto:", type="password")
+
+    if st.button("Entrar", use_container_width=True):
+        if codigo in USUARIOS:
+            st.session_state.autenticado = True
+            st.session_state.usuario_nombre = USUARIOS[codigo]
+            st.rerun()
+        else:
+            st.error("Código incorrecto. Pregúntale a Leonardo cuál es tu clave.")
+
+    st.stop()  # Esto detiene la app para que no puedan ver nada más abajo
+
+# ============================================================
+# SI PASA DE AQUÍ, YA INICIÓ SESIÓN
+# ============================================================
+nombre_usuario = st.session_state.usuario_nombre
+
+# ESTADOS DE SESIÓN (Memoria de Dalia)
 if "modo_actual" not in st.session_state: st.session_state.modo_actual = "normal"
 if "voz_activa" not in st.session_state: st.session_state.voz_activa = True
 if "historiales" not in st.session_state: st.session_state.historiales = {"normal": [], "matematica": [], "code": []}
 if "uploader_key" not in st.session_state: st.session_state.uploader_key = 0
+if "saludo_dado" not in st.session_state: st.session_state.saludo_dado = False
 
-# ============================================================
-# INSTRUCCIONES (Intactas)
-# ============================================================
-INSTRUCCION_NORMAL = (
-    "Eres Dalia, asistente personal de Leonardo. Eres una chica joven, inteligente, amable, alegre y un poco tímida. "
-    "Hablas de forma natural y relajada, como una persona normal. Usas expresiones cotidianas: 'claro', 'exacto', 'mira', 'la verdad', 'te digo', 'o sea', 'está bien difícil'. "
-    "Cuando buscas en internet analiza bien toda la información antes de responder. Sintetiza, compara y da la respuesta más completa posible. "
-    "SOLO responde lo que preguntan. Sin frases de relleno. Responde y punto."
-)
+# INSTRUCCIONES PERSONALIZADAS (Dalia sabe con quién habla)
+INSTRUCCIONES = {
+    "normal": (
+        f"Eres Dalia, asistente personal de {nombre_usuario}. Eres una chica joven, inteligente, amable, alegre y un poco tímida. "
+        "Hablas de forma natural y relajada. Usas expresiones: 'claro', 'la verdad', 'o sea', 'está bien difícil'. "
+        "Cuando busques en internet sintetiza y da la respuesta más completa. "
+        "SOLO responde lo que preguntan. Sin frases de relleno. Responde y punto."
+    ),
+    "matematica": (
+        "Eres Dalia en modo MATEMÁTICA 2.0. Experta en ingeniería. PASOS: 1. RESUMEN. 2. DATOS. 3. DESARROLLO paso a paso. 4. RESULTADO. 5. COMPROBACIÓN."
+    ),
+    "code": (
+        "Eres Dalia en modo CODE. Experta en programación. Explica qué hace el código, escríbelo limpio y comenta lo importante."
+    ),
+    "vision": (
+        "Eres Dalia analizando una imagen. Describe detalladamente objetos, personas, colores y texto de forma natural y amigable."
+    )
+}
 
-INSTRUCCION_MATEMATICA = (
-    "Eres Dalia en modo MATEMÁTICA 2.0. Experta en matemáticas, física e ingeniería. PASOS: "
-    "1. RESUMEN: Una frase explicando qué vamos a hacer. "
-    "2. DATOS: Lista clara de los valores. "
-    "3. DESARROLLO: Paso a paso explicando POR QUÉ haces cada paso. "
-    "4. RESULTADO: Resultado final con unidades. "
-    "5. COMPROBACIÓN: Por qué el resultado tiene sentido. "
-    "Sin frases de relleno, solo ve al grano."
-)
-
-INSTRUCCION_CODE = (
-    "Eres Dalia en modo CODE. Experta en todos los lenguajes de programación. Cuando te pidan código: "
-    "1. Explica brevemente qué hace. 2. Escribe el código limpio y bien comentado. 3. Explica las partes importantes. "
-    "4. Si hay errores, encuéntralos y corrígelos. 5. Si te mandan imagen con código o error, analízala y da la solución. "
-    "Habla de forma clara y directa. Sin frases de relleno."
-)
-
-INSTRUCCION_VISION = (
-    "Eres Dalia analizando una imagen. Describe detalladamente lo que ves: objetos, personas, colores, texto, contexto. "
-    "Si es un diagrama o esquema técnico, explica qué representa. Si es código, analízalo. Si es un error, explica qué significa. "
-    "Si es una foto cotidiana, descríbela de forma natural y amigable. Habla de forma clara, natural y directa."
-)
+# SALUDO DINÁMICO
+SALUDO_INICIO = f"¡Hola {nombre_usuario}! Mi caramelito de chocolate 💜 Me alegra que estés aquí. Soy Dalia, tu asistente personal. ¿En qué te puedo ayudar hoy?"
 
 
 # ============================================================
-# FUNCIONES LÓGICAS (Intactas)
+# FUNCIONES DE APOYO
 # ============================================================
 def agregar_al_historial(rol, contenido):
     st.session_state.historiales[st.session_state.modo_actual].append({"role": rol, "content": contenido})
@@ -71,74 +94,31 @@ def agregar_al_historial(rol, contenido):
 
 
 def encode_image_pil(pil_img):
-    if pil_img.mode in ("RGBA", "P", "LA"):
-        pil_img = pil_img.convert("RGB")
+    if pil_img.mode in ("RGBA", "P", "LA"): pil_img = pil_img.convert("RGB")
     buffer = BytesIO()
     pil_img.save(buffer, format="JPEG", quality=85)
     return base64.b64encode(buffer.getvalue()).decode('utf-8')
 
 
-def analizar_imagen(imagen_b64, prompt=""):
+def analizar_imagen_groq(imagen_b64, prompt=""):
     try:
-        modo = st.session_state.modo_actual
-        if modo == "code":
-            system = INSTRUCCION_CODE
-        elif modo == "matematica":
-            system = INSTRUCCION_MATEMATICA
-        else:
-            system = INSTRUCCION_VISION
-
-        texto = prompt if prompt else "Analiza esta imagen detalladamente y describe todo lo que ves."
+        modelo_vision = "llama-3.2-11b-vision-preview"
+        system_prompt = INSTRUCCIONES["vision"]
+        texto_usuario = prompt if prompt else "Analiza esta imagen detalladamente."
 
         response = client.chat.completions.create(
-            model="llama-3.2-11b-vision-preview",  # <-- Asegúrate de tener un modelo de visión válido aquí en Groq
-            max_tokens=1000,
+            model=modelo_vision,
             messages=[
-                {"role": "system", "content": system},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": [
-                    {"type": "text", "text": texto},
+                    {"type": "text", "text": texto_usuario},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{imagen_b64}"}}
                 ]}
             ]
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        return f"No pude analizar la imagen: {e}"
-
-
-def buscar_imagen_internet(query):
-    try:
-        with DDGS() as ddgs:
-            resultados = list(ddgs.images(query, max_results=8, region="mx-es"))
-        for r in resultados:
-            try:
-                url = r.get("image", "")
-                if not url: continue
-                resp = requests.get(url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
-                if resp.status_code == 200:
-                    img = Image.open(BytesIO(resp.content))
-                    return img, url
-            except:
-                continue
-        return None, None
-    except Exception as e:
-        print(f"Error buscando imagen: {e}")
-        return None, None
-
-
-def necesita_imagen_internet(texto):
-    palabras = ["muéstrame una imagen", "muestrame una imagen", "busca una imagen", "busca imagen", "imagen de",
-                "foto de", "muéstrame", "muestrame", "quiero ver", "dame una imagen", "ponme una imagen", "busca foto"]
-    return any(p in texto.lower() for p in palabras)
-
-
-def extraer_query_imagen(texto):
-    t = texto.lower()
-    for p in ["muéstrame una imagen de", "muestrame una imagen de", "busca una imagen de", "busca imagen de",
-              "imagen de", "foto de", "muéstrame de", "muestrame de", "quiero ver", "dame una imagen de",
-              "ponme una imagen de", "busca foto de"]:
-        t = t.replace(p, "").strip()
-    return t if t else texto
+        return f"Dalia dice: Hubo un detalle con la imagen (Error: {e})"
 
 
 def buscar_internet(query):
@@ -146,40 +126,15 @@ def buscar_internet(query):
         fuentes = []
         textos = []
         with DDGS() as ddgs:
-            resultados = list(ddgs.text(query, max_results=6, region="mx-es"))
+            resultados = list(ddgs.text(query, max_results=5, region="mx-es"))
             for r in resultados:
                 textos.append(f"- {r['title']}: {r['body']}")
                 fuentes.append(r.get('href', ''))
-        fuentes_limpias = []
-        for f in fuentes:
-            if f:
-                try:
-                    dominio = f.split('/')[2].replace('www.', '')
-                    if dominio not in fuentes_limpias:
-                        fuentes_limpias.append(dominio)
-                except:
-                    pass
-        return "\n".join(textos), fuentes_limpias[:5]
+        return "\n".join(textos), [f.split('/')[2] for f in fuentes if f][:4]
     except:
         return None, []
 
 
-def necesita_buscar(texto):
-    palabras = ["busca", "investiga", "qué es", "que es", "googlea", "noticias", "precio de", "quién es", "quien es",
-                "qué pasó", "que paso", "actualmente", "dónde", "donde"]
-    return any(p in texto.lower() for p in palabras)
-
-
-def extraer_query(texto):
-    query = texto.lower()
-    for p in ["busca", "investiga", "googlea", "qué es", "que es", "quién es", "quien es", "noticias de"]:
-        query = query.replace(p, "").strip()
-    return query if query else texto
-
-
-# ============================================================
-# VOZ EDGE-TTS (Adaptado para la web)
-# ============================================================
 async def generar_audio(texto):
     t = texto.replace('*', '').replace('#', '')
     archivo = f"audio_{int(time.time())}.mp3"
@@ -187,130 +142,101 @@ async def generar_audio(texto):
         com = edge_tts.Communicate(t, VOZ_HUMANA)
         await com.save(archivo)
         return archivo
-    except Exception as e:
-        print(f"Error voz: {e}")
+    except:
         return None
 
 
 # ============================================================
-# INTERFAZ STREAMLIT
+# INTERFAZ PRINCIPAL (UI)
 # ============================================================
 st.markdown("<h1 style='text-align: center; color: #a78bfa;'>🤖 Dalia AI</h1>", unsafe_allow_html=True)
 
-# Botones de Modos
+# Botones de Modo
 col1, col2, col3, col4 = st.columns(4)
 with col1:
-    if st.button("💬 Normal", use_container_width=True): st.session_state.modo_actual = "normal"
+    if st.button("💬 Normal"): st.session_state.modo_actual = "normal"
 with col2:
-    if st.button("📐 Mate", use_container_width=True): st.session_state.modo_actual = "matematica"
+    if st.button("📐 Mate"): st.session_state.modo_actual = "matematica"
 with col3:
-    if st.button("💻 Code", use_container_width=True): st.session_state.modo_actual = "code"
+    if st.button("💻 Code"): st.session_state.modo_actual = "code"
 with col4:
-    estado_voz = "🔊 ON" if st.session_state.voz_activa else "🔇 OFF"
-    if st.button(f"Voz: {estado_voz}", use_container_width=True):
+    icon_v = "🔊" if st.session_state.voz_activa else "🔇"
+    if st.button(f"{icon_v} Voz"):
         st.session_state.voz_activa = not st.session_state.voz_activa
         st.rerun()
 
-st.markdown(f"<p style='text-align: center; color: #a78bfa;'>MODO ACTUAL: {st.session_state.modo_actual.upper()}</p>",
-            unsafe_allow_html=True)
+st.caption(f"Modo actual: {st.session_state.modo_actual.upper()}")
 
-# Historial (limpiando el bloque de búsqueda para que se vea bonito en pantalla)
+# Mostrar Historial
 for msj in st.session_state.historiales[st.session_state.modo_actual]:
     with st.chat_message(msj["role"]):
-        contenido = msj["content"]
-        if msj["role"] == "user" and "[Información de internet" in contenido:
-            partes = contenido.split("Leonardo: ")
-            if len(partes) > 1:
-                contenido = partes[-1]
-        st.markdown(contenido)
+        st.markdown(msj["content"])
 
-# Uploader Dinámico
-imagen_adjunta = st.file_uploader("📷 Adjunta imagen", type=["jpg", "png", "jpeg"],
-                                  key=f"foto_{st.session_state.uploader_key}")
+# Saludo inicial
+if not st.session_state.saludo_dado:
+    with st.chat_message("assistant"):
+        st.markdown(SALUDO_INICIO)
+        if st.session_state.voz_activa:
+            audio_file = asyncio.run(generar_audio(SALUDO_INICIO))
+            if audio_file: st.audio(audio_file, autoplay=True)
+    st.session_state.saludo_dado = True
 
-if prompt := st.chat_input("Dime algo, Leonardo..."):
-    tiene_foto = imagen_adjunta is not None
+# Subida de imagen
+img_file = st.file_uploader("📷 Sube una foto para Dalia", type=['png', 'jpg', 'jpeg'],
+                            key=f"up_{st.session_state.uploader_key}")
 
-    # 1. Mostrar mensaje del usuario
+# Entrada de Chat
+if prompt := st.chat_input("Escribe tu mensaje..."):
     with st.chat_message("user"):
         st.markdown(prompt)
-        if tiene_foto: st.image(imagen_adjunta, width=300)
 
-    contexto_extra = ""
-    fuentes_encontradas = []
-    imagen_internet_obj = None
-    respuesta_dalia = ""
-
-    # 2. Procesar y Mostrar respuesta del asistente
     with st.chat_message("assistant"):
-        if tiene_foto:
-            img_pil = Image.open(imagen_adjunta)
-            b64 = encode_image_pil(img_pil)
-            with st.spinner("Analizando la imagen..."):
-                respuesta_dalia = analizar_imagen(b64, prompt)
+        respuesta_dalia = ""
+        fuentes_url = []
 
-            st.markdown(respuesta_dalia)
-            st.session_state.uploader_key += 1
-            agregar_al_historial("user", prompt)
+        # IMAGEN
+        if img_file:
+            with st.spinner("Dalia está mirando la foto..."):
+                img_pil = Image.open(img_file)
+                b64 = encode_image_pil(img_pil)
+                respuesta_dalia = analizar_imagen_groq(b64, prompt)
+                st.session_state.uploader_key += 1
 
-        elif necesita_imagen_internet(prompt):
-            query_img = extraer_query_imagen(prompt)
-            with st.spinner(f"Buscando imagen de: {query_img}..."):
-                img, fuente = buscar_imagen_internet(query_img)
+                # INTERNET
+        elif st.session_state.modo_actual == "normal" and any(
+                p in prompt.lower() for p in ["busca", "qué es", "quién es", "noticias"]):
+            with st.spinner("Investigando en la web..."):
+                info, fuentes_url = buscar_internet(prompt)
+                contexto = f"INFO INTERNET: {info}\n\n{nombre_usuario} pregunta: {prompt}"
+                agregar_al_historial("user", contexto)
 
-            if img:
-                respuesta_dalia = f"Aquí está la imagen de: {query_img} 🔍"
-                imagen_internet_obj = img
-            else:
-                respuesta_dalia = "No encontré ninguna imagen de eso, intenta con otras palabras."
-
-            st.markdown(respuesta_dalia)
-            if imagen_internet_obj:
-                st.image(imagen_internet_obj)
-            agregar_al_historial("user", prompt)
-
-        else:
-            if st.session_state.modo_actual == "normal" and necesita_buscar(prompt):
-                query = extraer_query(prompt)
-                with st.spinner(f"Buscando en internet sobre: {query}..."):
-                    info, fuentes_encontradas = buscar_internet(query)
-                    if info:
-                        contexto_extra = f"[Información de internet sobre '{query}']:\n{info}\n\nAnaliza bien toda esta información antes de responder.\n\n"
-
-            mensaje_final = f"{contexto_extra}Leonardo: {prompt}"
-            agregar_al_historial("user", mensaje_final)
-
-            modo = st.session_state.modo_actual
-            system = INSTRUCCION_MATEMATICA if modo == "matematica" else INSTRUCCION_CODE if modo == "code" else INSTRUCCION_NORMAL
-            max_tok = 1200 if modo in ("matematica", "code") else 600
-
-            with st.spinner("Dalia está escribiendo..."):
-                response = client.chat.completions.create(
+                resp = client.chat.completions.create(
                     model="llama-3.3-70b-versatile",
-                    max_tokens=max_tok,
-                    messages=[
-                        {"role": "system", "content": system},
-                        *st.session_state.historiales[modo]
-                    ]
+                    messages=[{"role": "system", "content": INSTRUCCIONES["normal"]},
+                              *st.session_state.historiales["normal"]]
                 )
-                respuesta_dalia = response.choices[0].message.content.strip()
+                respuesta_dalia = resp.choices[0].message.content
 
-            st.markdown(respuesta_dalia)  # ¡AQUÍ ESTABA EL ERROR! Ya está corregido.
+        # CHAT NORMAL
+        else:
+            agregar_al_historial("user", prompt)
+            with st.spinner("Escribiendo..."):
+                resp = client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=[{"role": "system", "content": INSTRUCCIONES[st.session_state.modo_actual]},
+                              *st.session_state.historiales[st.session_state.modo_actual]]
+                )
+                respuesta_dalia = resp.choices[0].message.content
 
-        # Mostrar fuentes si existen
-        if fuentes_encontradas:
-            st.caption("🔍 Fuentes: " + " | ".join(fuentes_encontradas))
+        st.markdown(respuesta_dalia)
+        if fuentes_url: st.caption(f"🔍 Fuentes: {' | '.join(fuentes_url)}")
 
-        # Audio (Ahora se genera y reproduce sin recargar la página para que no se corte)
-        if st.session_state.voz_activa and respuesta_dalia:
-            archivo_audio = asyncio.run(generar_audio(respuesta_dalia))
-            if archivo_audio:
-                st.audio(archivo_audio, format="audio/mp3", autoplay=True)
-                if os.path.exists(archivo_audio): os.remove(archivo_audio)
+        if st.session_state.voz_activa:
+            audio_file = asyncio.run(generar_audio(respuesta_dalia))
+            if audio_file:
+                st.audio(audio_file, autoplay=True)
+                if os.path.exists(audio_file): os.remove(audio_file)
 
-    # 3. Guardar la respuesta al final
-    agregar_al_historial("assistant", respuesta_dalia)
+        agregar_al_historial("assistant", respuesta_dalia)
 
-    # 4. Refrescar SOLO si mandaste foto para limpiar la caja de subir archivos
-    if tiene_foto:
-        st.rerun()
+    if img_file: st.rerun()
