@@ -11,23 +11,19 @@ from groq import Groq
 from duckduckgo_search import DDGS
 
 # ============================================================
-# CONFIGURACIÓN Y LLAVES (SECRETOS)
+# CONFIGURACIÓN Y LLAVES
 # ============================================================
-st.set_page_config(page_title="Dalia AI", page_icon="🤖", layout="centered")
+st.set_page_config(page_title="Dalia AI 2.0", page_icon="🤖", layout="centered")
 
-# IMPORTANTE: Asegúrate de tener GROQ_API_KEY en los Secrets de Streamlit
+# IMPORTANTE: Asegúrate de que en Streamlit Cloud tengas tu llave
 GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 VOZ_HUMANA = "es-MX-DaliaNeural"
 client = Groq(api_key=GROQ_API_KEY)
 
 # ============================================================
-# SISTEMA DE ACCESO (LOGIN)
+# SISTEMA DE ACCESO
 # ============================================================
-USUARIOS = {
-    "leo123": "Leonardo",
-    "chris123": "Christian",
-    "manu123": "Manuel"
-}
+USUARIOS = {"leo123": "Leonardo", "chris123": "Christian", "manu123": "Manuel"}
 
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
@@ -35,18 +31,18 @@ if "autenticado" not in st.session_state:
 
 if not st.session_state.autenticado:
     st.markdown("<h2 style='text-align: center; color: #a78bfa;'>🔐 Acceso a Dalia AI</h2>", unsafe_allow_html=True)
-    codigo = st.text_input("Ingresa tu código secreto:", type="password")
+    codigo = st.text_input("Código secreto:", type="password")
     if st.button("Entrar", use_container_width=True):
         if codigo in USUARIOS:
             st.session_state.autenticado = True
             st.session_state.usuario_nombre = USUARIOS[codigo]
             st.rerun()
         else:
-            st.error("Código incorrecto. Pídeselo a Leonardo.")
+            st.error("Código incorrecto.")
     st.stop()
 
 # ============================================================
-# PERSONALIDAD Y ESTADOS
+# ESTADOS Y PERSONALIDAD
 # ============================================================
 nombre_usuario = st.session_state.usuario_nombre
 
@@ -56,87 +52,66 @@ if "historiales" not in st.session_state: st.session_state.historiales = {"norma
 if "uploader_key" not in st.session_state: st.session_state.uploader_key = 0
 if "saludo_dado" not in st.session_state: st.session_state.saludo_dado = False
 
-# Instrucciones mejoradas del código de Claude
 INSTRUCCIONES = {
-    "normal": f"Eres Dalia, asistente de {nombre_usuario}. Eres joven, inteligente y un poco tímida. Hablas natural: 'claro', 'o sea', 'está bien difícil'. Sintetiza info de internet sin relleno.",
-    "matematica": "Eres Dalia modo MATEMÁTICA. Estilo ingeniería: Resumen, Datos, Desarrollo paso a paso, Resultado y Comprobación.",
-    "code": "Eres Dalia modo CODE. Experta en programación. Código limpio, comentarios útiles y solución de errores.",
-    "vision": "Eres Dalia analizando una imagen. Describe detalladamente objetos, colores, texto y contexto de forma natural."
+    "normal": f"Eres Dalia, asistente de {nombre_usuario}. Eres alegre y un poco tímida. Hablas natural (o sea, claro).",
+    "matematica": "Eres Dalia modo MATEMÁTICA. Resumen, Datos, Desarrollo, Resultado y Comprobación.",
+    "code": "Eres Dalia modo CODE. Código limpio y bien explicado.",
+    "vision": "Analiza la imagen detalladamente para Leonardo."
 }
 
-SALUDO_INICIO = f"¡Hola {nombre_usuario}! Mi caramelito de chocolate 💜 Me alegra que estés aquí. Soy Dalia. ¿Qué vamos a hacer hoy?"
-
 
 # ============================================================
-# FUNCIONES DE VISIÓN Y BÚSQUEDA (MEJORADAS)
+# HERRAMIENTAS ARREGLADAS
 # ============================================================
-def procesar_imagen_para_groq(img_file):
-    """Optimiza la imagen para evitar el Error 400 de tamaño."""
+
+def buscar_imagen_en_web(query):
+    """Busca fotos reales en internet."""
+    try:
+        # Limpiamos la pregunta para que la búsqueda sea mejor
+        for p in ["busca una imagen de", "muéstrame", "enséñame", "foto de", "internet de"]:
+            query = query.lower().replace(p, "")
+
+        with DDGS() as ddgs:
+            resultados = list(ddgs.images(query.strip(), max_results=5))
+            if resultados:
+                return resultados[0]['image']
+        return None
+    except:
+        return None
+
+
+def procesar_imagen_segura(img_file):
     img = Image.open(img_file)
     if img.mode != "RGB": img = img.convert("RGB")
-    img.thumbnail((1024, 1024))  # Reducir tamaño si es muy grande
+    img.thumbnail((800, 800))  # Más pequeña para evitar errores
     buffer = BytesIO()
-    img.save(buffer, format="JPEG", quality=80)
+    img.save(buffer, format="JPEG", quality=75)
     return base64.b64encode(buffer.getvalue()).decode('utf-8')
 
 
-def analizar_imagen_groq(imagen_b64, prompt=""):
-    """Lógica de visión mejorada."""
+def analizar_vision_actualizada(imagen_b64, prompt=""):
+    """Cambiamos al modelo Llama 3.2 90B que NO está apagado."""
     try:
-        # Elegir instrucción según el modo actual
-        if st.session_state.modo_actual == "code":
-            system = INSTRUCCIONES["code"]
-        elif st.session_state.modo_actual == "matematica":
-            system = INSTRUCCIONES["matematica"]
-        else:
-            system = INSTRUCCIONES["vision"]
-
-        texto_query = prompt if prompt else "Analiza esta imagen detalladamente."
-
+        # Usamos el modelo 90B que es más potente y sigue activo
         response = client.chat.completions.create(
-            model="llama-3.2-11b-vision-preview",  # Modelo de visión real y estable
+            model="llama-3.2-90b-vision-preview",
             messages=[
-                {"role": "system", "content": system},
                 {"role": "user", "content": [
-                    {"type": "text", "text": texto_query},
+                    {"type": "text", "text": prompt if prompt else "Describe esto."},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{imagen_b64}"}}
                 ]}
-            ],
-            max_tokens=1000
+            ]
         )
         return response.choices[0].message.content
     except Exception as e:
-        return f"Lo siento {nombre_usuario}, hubo un problema con la imagen: {e}"
+        return f"Dalia dice: Hubo un lío con el servidor de Groq ({e})."
 
 
-def buscar_imagen_en_web(query):
-    """Nueva función para que Dalia busque fotos para ti."""
-    try:
-        with DDGS() as ddgs:
-            resultados = list(ddgs.images(query, max_results=5))
-            if resultados:
-                return resultados[0]['image']  # Retorna la URL de la primera imagen
-        return None
-    except:
-        return None
-
-
-def buscar_texto_internet(query):
-    try:
-        textos = []
-        with DDGS() as ddgs:
-            res = list(ddgs.text(query, max_results=3, region="mx-es"))
-            for r in res: textos.append(f"{r['title']}: {r['body']}")
-        return "\n".join(textos)
-    except:
-        return None
-
-
-async def generar_audio(texto):
+async def hablar(texto):
     t = texto.replace('*', '').replace('#', '')
-    archivo = f"temp_vo_{int(time.time())}.mp3"
+    archivo = f"voz_{int(time.time())}.mp3"
     try:
-        com = edge_tts.Communicate(t[:300], VOZ_HUMANA)
+        com = edge_tts.Communicate(t[:250], VOZ_HUMANA)
         await com.save(archivo)
         return archivo
     except:
@@ -144,91 +119,73 @@ async def generar_audio(texto):
 
 
 # ============================================================
-# INTERFAZ DE USUARIO (WEB)
+# INTERFAZ (UI)
 # ============================================================
 st.markdown("<h1 style='text-align: center; color: #a78bfa;'>🤖 Dalia AI</h1>", unsafe_allow_html=True)
 
-# Botones de Control
-c1, c2, c3, c4 = st.columns(4)
-with c1:
+col1, col2, col3, col4 = st.columns(4)
+with col1:
     if st.button("💬 Normal"): st.session_state.modo_actual = "normal"
-with c2:
+with col2:
     if st.button("📐 Mate"): st.session_state.modo_actual = "matematica"
-with c3:
+with col3:
     if st.button("💻 Code"): st.session_state.modo_actual = "code"
-with c4:
-    icon = "🔊" if st.session_state.voz_activa else "🔇"
-    if st.button(f"{icon} Voz"):
+with col4:
+    if st.button("🔊 Voz" if st.session_state.voz_activa else "🔇 Voz"):
         st.session_state.voz_activa = not st.session_state.voz_activa
         st.rerun()
 
-st.caption(f"Dalia está en modo: {st.session_state.modo_actual.upper()} | Usuario: {nombre_usuario}")
-
-# Mostrar Historial
+# Chat
 for m in st.session_state.historiales[st.session_state.modo_actual]:
     with st.chat_message(m["role"]): st.markdown(m["content"])
 
-# Saludo Inicial
 if not st.session_state.saludo_dado:
-    with st.chat_message("assistant"):
-        st.markdown(SALUDO_INICIO)
-        if st.session_state.voz_activa:
-            aud = asyncio.run(generar_audio(SALUDO_INICIO))
-            if aud: st.audio(aud, autoplay=True)
+    saludo = f"¡Hola {nombre_usuario}! Mi caramelito de chocolate 💜 ¿Qué investigamos hoy?"
+    with st.chat_message("assistant"): st.markdown(saludo)
     st.session_state.saludo_dado = True
 
-# SUBIDA DE ARCHIVOS
-img_subida = st.file_uploader("📷 Sube una foto o pega una captura", type=['png', 'jpg', 'jpeg'],
-                              key=f"up_{st.session_state.uploader_key}")
+# SUBIR FOTO
+img_input = st.file_uploader("📷 Sube algo aquí", type=['png', 'jpg', 'jpeg'], key=f"up_{st.session_state.uploader_key}")
 
-# CHAT INPUT
+# INPUT PRINCIPAL
 if prompt := st.chat_input("Dime algo..."):
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        # CASO 1: HAY IMAGEN SUBIDA
-        if img_subida:
-            with st.spinner("Analizando imagen..."):
-                b64 = procesar_imagen_para_groq(img_subida)
-                respuesta = analizar_imagen_groq(b64, prompt)
-                st.session_state.uploader_key += 1  # Reset uploader
+        # 1. Si hay imagen subida
+        if img_input:
+            with st.spinner("Dalia está mirando..."):
+                b64 = procesar_imagen_segura(img_input)
+                res = analizar_vision_actualizada(b64, prompt)
+                st.session_state.uploader_key += 1
 
-        # CASO 2: PEDIR IMAGEN A INTERNET
-        elif any(p in prompt.lower() for p in ["busca una imagen de", "muéstrame una foto de", "enséñame un"]):
-            with st.spinner("Buscando imagen..."):
-                url_img = buscar_imagen_en_web(prompt)
-                if url_img:
-                    st.image(url_img, caption=f"Resultado para: {prompt}")
-                    respuesta = f"Aquí tienes la imagen que encontré de {prompt}. ¿Te gusta?"
+        # 2. Si pides BUSCAR una imagen (Filtro mejorado)
+        elif any(x in prompt.lower() for x in ["busca una imagen", "foto de", "muéstrame", "enséñame"]):
+            with st.spinner("Buscando en internet..."):
+                url = buscar_imagen_en_web(prompt)
+                if url:
+                    st.image(url)
+                    res = f"¡Mira {nombre_usuario}! Encontré esto para ti. ¿Es lo que buscabas?"
                 else:
-                    respuesta = "No pude encontrar una imagen sobre eso."
+                    res = "No encontré imágenes recientes, pero puedo buscarte info si quieres."
 
-        # CASO 3: BÚSQUEDA DE TEXTO O CHAT NORMAL
+        # 3. Chat normal
         else:
-            with st.spinner("Dalia está pensando..."):
-                contexto_web = ""
-                if "busca" in prompt.lower() or "quién es" in prompt.lower():
-                    info = buscar_texto_internet(prompt)
-                    if info: contexto_web = f"INFORMACIÓN WEB: {info}\n\n"
-
-                # Memoria
-                st.session_state.historiales[st.session_state.modo_actual].append(
-                    {"role": "user", "content": f"{contexto_web}{prompt}"})
-
-                completions = client.chat.completions.create(
+            with st.spinner("Pensando..."):
+                st.session_state.historiales[st.session_state.modo_actual].append({"role": "user", "content": prompt})
+                comp = client.chat.completions.create(
                     model="llama-3.3-70b-versatile",
                     messages=[{"role": "system", "content": INSTRUCCIONES[st.session_state.modo_actual]},
                               *st.session_state.historiales[st.session_state.modo_actual]]
                 )
-                respuesta = completions.choices[0].message.content
+                res = comp.choices[0].message.content
 
-        # Mostrar respuesta y hablar
-        st.markdown(respuesta)
-        st.session_state.historiales[st.session_state.modo_actual].append({"role": "assistant", "content": respuesta})
+        st.markdown(res)
+        st.session_state.historiales[st.session_state.modo_actual].append({"role": "assistant", "content": res})
 
         if st.session_state.voz_activa:
-            aud = asyncio.run(generar_audio(respuesta))
-            if aud: st.audio(aud, autoplay=True)
+            a = asyncio.run(hablar(res))
+            if a: st.audio(a, autoplay=True)
 
-    if img_subida: st.rerun()
+    if img_input: st.rerun()
