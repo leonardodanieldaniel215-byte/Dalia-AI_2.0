@@ -3,14 +3,143 @@ import asyncio
 import base64
 import os
 import time
+import json
 from io import BytesIO
 
 import edge_tts
 import requests
 from groq import Groq
-from ddgs import DDGS
 from PIL import Image
-import speech_recognition as sr
+
+# ============================================================
+# BÚSQUEDA WEB CON REQUESTS (sin duckduckgo-search)
+# ============================================================
+def buscar_duckduckgo(query, max_results=6):
+    """Búsqueda web usando la API HTML de DuckDuckGo con requests."""
+    try:
+        url = "https://html.duckduckgo.com/html/"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        data = {"q": query, "kl": "mx-es"}
+        resp = requests.post(url, data=data, headers=headers, timeout=10)
+
+        if resp.status_code != 200:
+            return None, []
+
+        from html.parser import HTMLParser
+
+        class DDGParser(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.results = []
+                self.in_result = False
+                self.in_title = False
+                self.in_snippet = False
+                self.current = {}
+                self.link_href = ""
+
+            def handle_starttag(self, tag, attrs):
+                attrs_dict = dict(attrs)
+                if tag == "div" and "result" in attrs_dict.get("class", ""):
+                    self.in_result = True
+                    self.current = {}
+                elif self.in_result and tag == "a" and "result__a" in attrs_dict.get("class", ""):
+                    self.in_title = True
+                    self.link_href = attrs_dict.get("href", "")
+                elif self.in_result and tag == "a" and "result__snippet" in attrs_dict.get("class", ""):
+                    self.in_snippet = True
+                    self.current["href"] = attrs_dict.get("href", "")
+
+            def handle_endtag(self, tag):
+                if tag == "div" and self.in_result:
+                    if self.current.get("title") and self.current.get("body"):
+                        self.results.append(self.current)
+                    self.in_result = False
+                    self.current = {}
+                elif tag == "a" and self.in_title:
+                    self.in_title = False
+                elif tag == "a" and self.in_snippet:
+                    self.in_snippet = False
+
+            def handle_data(self, data):
+                if self.in_title:
+                    self.current["title"] = data.strip()
+                    self.current["href"] = self.link_href
+                elif self.in_snippet:
+                    self.current["body"] = data.strip()
+
+        parser = DDGParser()
+        parser.feed(resp.text)
+
+        textos = []
+        fuentes = []
+        for r in parser.results[:max_results]:
+            textos.append(f"- {r.get('title', '')}: {r.get('body', '')}")
+            href = r.get("href", "")
+            if href:
+                try:
+                    dominio = href.split("/")[2].replace("www.", "")
+                    if dominio not in fuentes:
+                        fuentes.append(dominio)
+                except:
+                    pass
+
+        return "\n".join(textos), fuentes[:5]
+    except Exception as e:
+        return None, []
+
+def buscar_imagen_ddg(query):
+    """Buscar imagen usando DuckDuckGo Images."""
+    try:
+        url = "https://duckduckgo.com/"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        # Primero obtenemos el token vqd
+        resp = requests.get(url, params={"q": query}, headers=headers, timeout=10)
+
+        # Extraer vqd
+        vqd = ""
+        for line in resp.text.split("\n"):
+            if "vqd=" in line:
+                try:
+                    vqd = line.split("vqd=")[1].split("&")[0].split("\"")[0]
+                    break
+                except:
+                    pass
+
+        if not vqd:
+            return None, None
+
+        img_url = "https://duckduckgo.com/i.js"
+        params = {
+            "l": "mx-es",
+            "o": "json",
+            "q": query,
+            "vqd": vqd,
+            "f": ",,,",
+            "p": "1"
+        }
+
+        resp_img = requests.get(img_url, params=params, headers=headers, timeout=10)
+        data = resp_img.json()
+
+        for r in data.get("results", [])[:8]:
+            try:
+                img_url = r.get("image", "")
+                if not img_url:
+                    continue
+                img_resp = requests.get(img_url, timeout=5, headers=headers)
+                if img_resp.status_code == 200:
+                    img = Image.open(BytesIO(img_resp.content))
+                    return img, img_url
+            except:
+                continue
+
+        return None, None
+    except Exception as e:
+        return None, None
 
 # ============================================================
 # CONFIGURACIÓN DE PÁGINA
@@ -18,183 +147,35 @@ import speech_recognition as sr
 st.set_page_config(page_title="Dalia", page_icon="🤖", layout="centered")
 
 # ============================================================
-# CSS CUSTOM — ESTÉTICA ORIGINAL + BARRA TIPO CHATGPT EXACTA
+# CSS CUSTOM — ESTÉTICA ORIGINAL + BARRA TIPO CHATGPT
 # ============================================================
 st.markdown("""
 <style>
-    /* Fondo general negro */
-    .stApp {
-        background-color: #000000 !important;
-    }
-
-    /* Texto general */
-    html, body, [class*="css"] {
-        color: #e2e2e2 !important;
-        font-family: 'Arial', sans-serif !important;
-    }
-
-    /* Título principal */
-    h1, h2, h3 {
-        color: #a78bfa !important;
-        font-weight: bold !important;
-        text-align: center !important;
-    }
-
-    /* Chat messages */
-    .stChatMessage {
-        background-color: #0d0d0d !important;
-        border-radius: 12px !important;
-        border: 1px solid #2a2a3e !important;
-    }
-
-    /* Caption/fuentes */
-    .stCaption {
-        color: #4f9cf9 !important;
-        font-size: 0.85em !important;
-    }
-
-    /* Spinner */
-    .stSpinner > div {
-        color: #a78bfa !important;
-    }
-
-    /* Divider */
-    hr {
-        border-color: #2a2a3e !important;
-    }
-
-    /* Login card */
-    .login-card {
-        background-color: #0d0d0d !important;
-        border: 1px solid #2a2a3e !important;
-        border-radius: 16px !important;
-        padding: 40px !important;
-        max-width: 400px !important;
-        margin: 0 auto !important;
-        text-align: center !important;
-    }
-
-    /* Scrollbar oscura */
-    ::-webkit-scrollbar {
-        width: 8px !important;
-    }
-    ::-webkit-scrollbar-track {
-        background: #000000 !important;
-    }
-    ::-webkit-scrollbar-thumb {
-        background: #3e3e5e !important;
-        border-radius: 4px !important;
-    }
-
-    /* Creador badge */
-    .creator-badge {
-        background: linear-gradient(135deg, #7c3aed, #a78bfa) !important;
-        color: white !important;
-        padding: 2px 10px !important;
-        border-radius: 12px !important;
-        font-size: 0.75em !important;
-        font-weight: bold !important;
-        margin-left: 8px !important;
-    }
-
-    /* ==========================================
-       BARRA TIPO CHATGPT — EXACTA A LA IMAGEN
-       ========================================== */
-
-    /* Contenedor padre de la barra */
-    .chatgpt-bar-wrapper {
-        background-color: #2d2d2d !important;
-        border-radius: 24px !important;
-        padding: 6px 10px !important;
-        border: 1px solid #3e3e3e !important;
-        display: flex !important;
-        align-items: center !important;
-        margin-bottom: 20px !important;
-    }
-
-    /* Input de texto — sin bordes, fondo transparente */
-    .chatgpt-bar-wrapper .stTextInput > div > div > input {
-        background: transparent !important;
-        border: none !important;
-        color: #ffffff !important;
-        font-size: 15px !important;
-        padding: 8px 4px !important;
-        box-shadow: none !important;
-    }
-    .chatgpt-bar-wrapper .stTextInput > div > div > input::placeholder {
-        color: #9ca3af !important;
-    }
-
-    /* Botón + (popover trigger) */
-    .chatgpt-bar-wrapper div[data-testid="stPopover"] > button {
-        background: transparent !important;
-        border: none !important;
-        color: #e2e2e2 !important;
-        font-size: 22px !important;
-        padding: 0 !important;
-        width: 32px !important;
-        height: 32px !important;
-        border-radius: 50% !important;
-    }
-    .chatgpt-bar-wrapper div[data-testid="stPopover"] > button:hover {
-        background: #3e3e3e !important;
-    }
-    .chatgpt-bar-wrapper div[data-testid="stPopover"] > button p {
-        font-size: 0px !important;
-    }
-    .chatgpt-bar-wrapper div[data-testid="stPopover"] > button::before {
-        content: "➕" !important;
-        font-size: 18px !important;
-    }
-
-    /* Botón micrófono */
-    .chatgpt-bar-wrapper .btn-mic .stButton > button {
-        background: transparent !important;
-        border: none !important;
-        color: #e2e2e2 !important;
-        font-size: 18px !important;
-        padding: 0 !important;
-        width: 32px !important;
-        height: 32px !important;
-        border-radius: 50% !important;
-    }
-    .chatgpt-bar-wrapper .btn-mic .stButton > button:hover {
-        background: #3e3e3e !important;
-    }
-
-    /* Botón enviar circular (derecha) */
-    .chatgpt-bar-wrapper .btn-send .stButton > button {
-        background: #e2e2e2 !important;
-        color: #000000 !important;
-        border: none !important;
-        border-radius: 50% !important;
-        width: 32px !important;
-        height: 32px !important;
-        font-size: 14px !important;
-        padding: 0 !important;
-        font-weight: bold !important;
-    }
-    .chatgpt-bar-wrapper .btn-send .stButton > button:hover {
-        background: #ffffff !important;
-    }
-
-    /* Popover menu */
-    div[data-testid="stPopoverPopover"] {
-        background-color: #1a1a1a !important;
-        border: 1px solid #3e3e3e !important;
-        border-radius: 12px !important;
-    }
-
-    /* Modo label arriba del chat */
-    .modo-label-top {
-        text-align: center !important;
-        font-weight: bold !important;
-        font-size: 1em !important;
-        margin-bottom: 10px !important;
-        padding: 4px 12px !important;
-        border-radius: 16px !important;
-        display: inline-block !important;
-    }
+    .stApp { background-color: #000000 !important; }
+    html, body, [class*="css"] { color: #e2e2e2 !important; font-family: 'Arial', sans-serif !important; }
+    h1, h2, h3 { color: #a78bfa !important; font-weight: bold !important; text-align: center !important; }
+    .stChatMessage { background-color: #0d0d0d !important; border-radius: 12px !important; border: 1px solid #2a2a3e !important; }
+    .stCaption { color: #4f9cf9 !important; font-size: 0.85em !important; }
+    .stSpinner > div { color: #a78bfa !important; }
+    hr { border-color: #2a2a3e !important; }
+    .login-card { background-color: #0d0d0d !important; border: 1px solid #2a2a3e !important; border-radius: 16px !important; padding: 40px !important; max-width: 400px !important; margin: 0 auto !important; text-align: center !important; }
+    ::-webkit-scrollbar { width: 8px !important; }
+    ::-webkit-scrollbar-track { background: #000000 !important; }
+    ::-webkit-scrollbar-thumb { background: #3e3e5e !important; border-radius: 4px !important; }
+    .creator-badge { background: linear-gradient(135deg, #7c3aed, #a78bfa) !important; color: white !important; padding: 2px 10px !important; border-radius: 12px !important; font-size: 0.75em !important; font-weight: bold !important; margin-left: 8px !important; }
+    .chatgpt-bar-wrapper { background-color: #2d2d2d !important; border-radius: 24px !important; padding: 6px 10px !important; border: 1px solid #3e3e3e !important; display: flex !important; align-items: center !important; margin-bottom: 20px !important; }
+    .chatgpt-bar-wrapper .stTextInput > div > div > input { background: transparent !important; border: none !important; color: #ffffff !important; font-size: 15px !important; padding: 8px 4px !important; box-shadow: none !important; }
+    .chatgpt-bar-wrapper .stTextInput > div > div > input::placeholder { color: #9ca3af !important; }
+    .chatgpt-bar-wrapper div[data-testid="stPopover"] > button { background: transparent !important; border: none !important; color: #e2e2e2 !important; font-size: 22px !important; padding: 0 !important; width: 32px !important; height: 32px !important; border-radius: 50% !important; }
+    .chatgpt-bar-wrapper div[data-testid="stPopover"] > button:hover { background: #3e3e3e !important; }
+    .chatgpt-bar-wrapper div[data-testid="stPopover"] > button p { font-size: 0px !important; }
+    .chatgpt-bar-wrapper div[data-testid="stPopover"] > button::before { content: "➕" !important; font-size: 18px !important; }
+    .chatgpt-bar-wrapper .btn-mic .stButton > button { background: transparent !important; border: none !important; color: #e2e2e2 !important; font-size: 18px !important; padding: 0 !important; width: 32px !important; height: 32px !important; border-radius: 50% !important; }
+    .chatgpt-bar-wrapper .btn-mic .stButton > button:hover { background: #3e3e3e !important; }
+    .chatgpt-bar-wrapper .btn-send .stButton > button { background: #e2e2e2 !important; color: #000000 !important; border: none !important; border-radius: 50% !important; width: 32px !important; height: 32px !important; font-size: 14px !important; padding: 0 !important; font-weight: bold !important; }
+    .chatgpt-bar-wrapper .btn-send .stButton > button:hover { background: #ffffff !important; }
+    div[data-testid="stPopoverPopover"] { background-color: #1a1a1a !important; border: 1px solid #3e3e3e !important; border-radius: 12px !important; }
+    .modo-label-top { text-align: center !important; font-weight: bold !important; font-size: 1em !important; margin-bottom: 10px !important; padding: 4px 12px !important; border-radius: 16px !important; display: inline-block !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -202,20 +183,20 @@ st.markdown("""
 # CREDENCIALES Y CLIENTES
 # ============================================================
 GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", "PON-TU-KEY-AQUÍ")
-VOZ_HUMANA = "es-MX-DaliaNeural"
-client = Groq(api_key=GROQ_API_KEY)
+VOZ_HUMANA   = "es-MX-DaliaNeural"
+client       = Groq(api_key=GROQ_API_KEY)
 
 # ============================================================
 # USUARIOS AUTORIZADOS
 # ============================================================
 USUARIOS = {
-    "chris123": "CHRISTIAN",
-    "emanu123": "EMMANUEL",
-    "leo123": "LEONARDO"
+    "chris123":  "CHRISTIAN",
+    "emanu123":  "EMMANUEL",
+    "leo123":    "LEONARDO"
 }
 
 # ============================================================
-# INSTRUCCIONES (IGUALES QUE TU ORIGINAL)
+# INSTRUCCIONES
 # ============================================================
 INSTRUCCION_NORMAL = (
     "Eres Dalia, asistente personal de Leonardo. "
@@ -259,9 +240,8 @@ INSTRUCCION_VISION = (
     "Habla de forma clara, natural y directa."
 )
 
-
 # ============================================================
-# ESTADO GLOBAL (SESSION STATE)
+# ESTADO GLOBAL
 # ============================================================
 def init_state():
     defaults = {
@@ -278,9 +258,7 @@ def init_state():
         if k not in st.session_state:
             st.session_state[k] = v
 
-
 init_state()
-
 
 # ============================================================
 # HISTORIALES
@@ -291,14 +269,12 @@ def agregar_al_historial(rol, contenido):
     if len(st.session_state.historiales[modo]) > 20:
         st.session_state.historiales[modo].pop(0)
 
-
 # ============================================================
 # IMAGEN — ENCODE
 # ============================================================
 def encode_image_path(path):
     with open(path, "rb") as f:
         return base64.b64encode(f.read()).decode('utf-8')
-
 
 def encode_image_pil(pil_img):
     if pil_img.mode in ("RGBA", "P", "LA"):
@@ -307,18 +283,14 @@ def encode_image_pil(pil_img):
     pil_img.save(buffer, format="JPEG", quality=85)
     return base64.b64encode(buffer.getvalue()).decode('utf-8')
 
-
 # ============================================================
 # ANALIZAR IMAGEN CON GROQ VISION
 # ============================================================
 def analizar_imagen(imagen_b64, prompt=""):
     try:
-        if st.session_state.modo_actual == "code":
-            system = INSTRUCCION_CODE
-        elif st.session_state.modo_actual == "matematica":
-            system = INSTRUCCION_MATEMATICA
-        else:
-            system = INSTRUCCION_VISION
+        if   st.session_state.modo_actual == "code":       system = INSTRUCCION_CODE
+        elif st.session_state.modo_actual == "matematica": system = INSTRUCCION_MATEMATICA
+        else:                                              system = INSTRUCCION_VISION
 
         texto = prompt if prompt else "Analiza esta imagen detalladamente y describe todo lo que ves."
 
@@ -339,30 +311,11 @@ def analizar_imagen(imagen_b64, prompt=""):
     except Exception as e:
         return f"No pude analizar la imagen: {e}"
 
-
 # ============================================================
-# BUSCAR IMAGEN EN INTERNET
+# BUSCAR IMAGEN EN INTERNET (con requests puro)
 # ============================================================
 def buscar_imagen_internet(query):
-    try:
-        with DDGS() as ddgs:
-            resultados = list(ddgs.images(query, max_results=8, region="mx-es"))
-        for r in resultados:
-            try:
-                url = r.get("image", "")
-                if not url:
-                    continue
-                resp = requests.get(url, timeout=5,
-                                    headers={"User-Agent": "Mozilla/5.0"})
-                if resp.status_code == 200:
-                    img = Image.open(BytesIO(resp.content))
-                    return img, url
-            except:
-                continue
-        return None, None
-    except Exception as e:
-        return None, None
-
+    return buscar_imagen_ddg(query)
 
 def necesita_imagen_internet(texto):
     palabras = ["muéstrame una imagen", "muestrame una imagen",
@@ -371,7 +324,6 @@ def necesita_imagen_internet(texto):
                 "muestrame", "quiero ver", "dame una imagen",
                 "ponme una imagen", "busca foto"]
     return any(p in texto.lower() for p in palabras)
-
 
 def extraer_query_imagen(texto):
     t = texto.lower()
@@ -383,46 +335,17 @@ def extraer_query_imagen(texto):
         t = t.replace(p, "").strip()
     return t if t else texto
 
-
 # ============================================================
-# INTERNET — TEXTO
+# INTERNET — TEXTO (con requests puro)
 # ============================================================
 def buscar_internet(query):
-    try:
-        fuentes = []
-        textos = []
-        with DDGS() as ddgs:
-            resultados = list(ddgs.text(query, max_results=6, region="mx-es"))
-            for r in resultados:
-                textos.append(f"- {r['title']}: {r['body']}")
-                fuentes.append(r.get('href', ''))
-            try:
-                noticias = list(ddgs.news(query, max_results=3, region="mx-es"))
-                for n in noticias:
-                    textos.append(f"- [Noticia] {n['title']}: {n['body']}")
-                    fuentes.append(n.get('url', ''))
-            except:
-                pass
-        fuentes_limpias = []
-        for f in fuentes:
-            if f:
-                try:
-                    dominio = f.split('/')[2].replace('www.', '')
-                    if dominio not in fuentes_limpias:
-                        fuentes_limpias.append(dominio)
-                except:
-                    pass
-        return "\n".join(textos), fuentes_limpias[:5]
-    except:
-        return None, []
-
+    return buscar_duckduckgo(query)
 
 def necesita_buscar(texto):
     palabras = ["busca", "investiga", "qué es", "que es", "googlea",
                 "noticias", "precio de", "quién es", "quien es",
                 "qué pasó", "que paso", "actualmente", "dónde", "donde"]
     return any(p in texto.lower() for p in palabras)
-
 
 def extraer_query(texto):
     query = texto.lower()
@@ -431,28 +354,24 @@ def extraer_query(texto):
         query = query.replace(p, "").strip()
     return query if query else texto
 
-
 # ============================================================
-# PREGUNTAR A DALIA (LÓGICA ORIGINAL PRESERVADA)
+# PREGUNTAR A DALIA
 # ============================================================
 def preguntar_a_dalia(mensaje, imagen_b64=None):
     contexto_extra = ""
-    fuentes = []
+    fuentes        = []
 
-    # ── Con imagen — análisis visual ──
     if imagen_b64:
         respuesta = analizar_imagen(imagen_b64, mensaje)
         return respuesta, [], None
 
-    # ── Buscar imagen en internet ──
     if necesita_imagen_internet(mensaje):
-        query_img = extraer_query_imagen(mensaje)
+        query_img   = extraer_query_imagen(mensaje)
         img, fuente = buscar_imagen_internet(query_img)
         if img:
             return f"Aquí está la imagen de: {query_img} 🔍", [], img
         return "No encontré ninguna imagen de eso, intenta con otras palabras.", [], None
 
-    # ── Búsqueda de texto ──
     if st.session_state.modo_actual == "normal" and necesita_buscar(mensaje):
         query = extraer_query(mensaje)
         info, fuentes = buscar_internet(query)
@@ -461,16 +380,15 @@ def preguntar_a_dalia(mensaje, imagen_b64=None):
                 f"[Información de internet sobre '{query}']:\n{info}\n\n"
                 f"Analiza bien toda esta información antes de responder.\n\n"
             )
+        else:
+            contexto_extra = "[No pude buscar en internet en este momento]\n\n"
 
     mensaje_final = f"{contexto_extra}Leonardo: {mensaje}"
     agregar_al_historial("user", mensaje_final)
 
-    if st.session_state.modo_actual == "matematica":
-        system = INSTRUCCION_MATEMATICA
-    elif st.session_state.modo_actual == "code":
-        system = INSTRUCCION_CODE
-    else:
-        system = INSTRUCCION_NORMAL
+    if   st.session_state.modo_actual == "matematica": system = INSTRUCCION_MATEMATICA
+    elif st.session_state.modo_actual == "code":       system = INSTRUCCION_CODE
+    else:                                              system = INSTRUCCION_NORMAL
 
     max_tok = 1200 if st.session_state.modo_actual in ("matematica", "code") else 600
 
@@ -487,9 +405,8 @@ def preguntar_a_dalia(mensaje, imagen_b64=None):
     agregar_al_historial("assistant", respuesta)
     return respuesta, fuentes, None
 
-
 # ============================================================
-# VOZ (ADAPTADA A STREAMLIT)
+# VOZ
 # ============================================================
 async def _generar_audio_async(texto):
     t = texto.replace('*', '').replace('#', '')
@@ -497,7 +414,6 @@ async def _generar_audio_async(texto):
     com = edge_tts.Communicate(t, VOZ_HUMANA)
     await com.save(archivo)
     return archivo
-
 
 def hablar(texto):
     if not st.session_state.voz_activa:
@@ -510,9 +426,8 @@ def hablar(texto):
     except Exception as e:
         st.toast(f"🔇 Error de voz: {e}")
 
-
 # ============================================================
-# LOGIN — PANTALLA DE ACCESO
+# LOGIN
 # ============================================================
 if not st.session_state.authenticated:
     st.markdown("""
@@ -550,7 +465,6 @@ if not st.session_state.authenticated:
 nombre_amigo = st.session_state.username
 es_creador = (nombre_amigo == "LEONARDO")
 
-# Saludo personalizado
 if es_creador:
     SALUDO_INICIO = (
         f"Hola mi creador {nombre_amigo}! 💜✨ Mi caramelito de chocolate favorito. "
@@ -570,7 +484,6 @@ else:
         f"¿En qué te puedo ayudar hoy?"
     )
 
-# Título principal
 if es_creador:
     st.markdown(
         f"<h2 style='text-align:center;'>🤖 Dalia <span class='creator-badge'>CREADOR</span></h2>",
@@ -585,12 +498,11 @@ st.markdown(
 )
 
 # ============================================================
-# SIDEBAR — CONTROLES ADICIONALES
+# SIDEBAR
 # ============================================================
 with st.sidebar:
     st.markdown("<h3 style='color:#a78bfa;'>⚙️ Controles</h3>", unsafe_allow_html=True)
 
-    # Toggle voz
     st.session_state.voz_activa = st.toggle(
         "🔊 Voz: ON" if st.session_state.voz_activa else "🔇 Voz: OFF",
         value=st.session_state.voz_activa
@@ -598,7 +510,6 @@ with st.sidebar:
 
     st.divider()
 
-    # Subir imagen desde sidebar también (opcional)
     st.markdown("<p style='color:#a78bfa; font-weight:bold;'>📷 O sube imagen aquí</p>", unsafe_allow_html=True)
     archivo_img_sidebar = st.file_uploader(
         "Sube imagen sidebar",
@@ -621,12 +532,12 @@ with st.sidebar:
         st.rerun()
 
 # ============================================================
-# INDICADOR DE MODO ACTUAL
+# INDICADOR DE MODO
 # ============================================================
 modos_colores = {
-    "normal": ("💬 Normal", "#a78bfa", "#2a2a3e"),
+    "normal":     ("💬 Normal", "#a78bfa", "#2a2a3e"),
     "matematica": ("📐 MATEMÁTICA 2.0", "#f59e0b", "#2a1a0a"),
-    "code": ("💻 CODE", "#10b981", "#0a2a1a")
+    "code":       ("💻 CODE", "#10b981", "#0a2a1a")
 }
 modo_txt, modo_color, modo_bg = modos_colores[st.session_state.modo_actual]
 
@@ -637,7 +548,7 @@ st.markdown(
 )
 
 # ============================================================
-# CHAT — MENSAJES
+# CHAT
 # ============================================================
 if not st.session_state.messages:
     st.session_state.messages.append({"role": "assistant", "content": SALUDO_INICIO})
@@ -659,11 +570,10 @@ for msg in st.session_state.messages:
             st.caption("🔍 Fuentes: " + "  ".join([f"`{f}`" for f in msg["fuentes"]]))
 
 # ============================================================
-# BARRA TIPO CHATGPT EXACTA — [ + ] [ TEXTO ] [ 🎙️ ] [ ➤ ]
+# BARRA TIPO CHATGPT — [ + ] [ TEXTO ] [ 🎙️ ] [ ➤ ]
 # ============================================================
 st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
 
-# Preview de imagen si hay una cargada desde el menú +
 if st.session_state.imagen_pil:
     st.markdown(
         f"<p style='color:#34d399; font-size:0.9em; margin-bottom:5px;'>"
@@ -671,19 +581,15 @@ if st.session_state.imagen_pil:
         unsafe_allow_html=True
     )
 
-# Contenedor con clase CSS para estilizar como barra ChatGPT
 with st.container():
     st.markdown('<div class="chatgpt-bar-wrapper">', unsafe_allow_html=True)
 
     col_plus, col_texto, col_mic, col_enviar = st.columns([1, 10, 1, 1])
 
     with col_plus:
-        # Menú popover con la cruseta +
         with st.popover("", use_container_width=True):
-            st.markdown("<p style='color:#a78bfa; font-weight:bold; margin-bottom:10px;'>⚙️ Opciones</p>",
-                        unsafe_allow_html=True)
+            st.markdown("<p style='color:#a78bfa; font-weight:bold; margin-bottom:10px;'>⚙️ Opciones</p>", unsafe_allow_html=True)
 
-            # Opciones de modo
             c1, c2, c3 = st.columns(3)
             with c1:
                 if st.button("💬 Normal", use_container_width=True, key="pop_normal"):
@@ -700,7 +606,6 @@ with st.container():
 
             st.divider()
 
-            # Subir imagen desde el menú +
             st.markdown("<p style='color:#a78bfa; font-weight:bold;'>📷 Subir imagen</p>", unsafe_allow_html=True)
             archivo_img_pop = st.file_uploader(
                 "Selecciona imagen",
@@ -727,7 +632,6 @@ with st.container():
 
     with col_mic:
         st.markdown('<div class="btn-mic">', unsafe_allow_html=True)
-        # Toggle rápido de voz al tocar el micrófono
         mic_emoji = "🎙️" if st.session_state.voz_activa else "🔇"
         if st.button(mic_emoji, key="btn_mic", use_container_width=True):
             st.session_state.voz_activa = not st.session_state.voz_activa
@@ -747,20 +651,16 @@ with st.container():
 if enviar_btn and texto_input.strip():
     prompt = texto_input.strip()
 
-    # Guardar mensaje usuario
     st.session_state.messages.append({"role": "user", "content": prompt})
 
-    # Preparar imagen si hay
     imagen_b64 = None
     if st.session_state.imagen_pil:
         imagen_b64 = encode_image_pil(st.session_state.imagen_pil)
         st.session_state.imagen_pil = None
 
-    # Procesar respuesta
     with st.spinner("Dalia está pensando..."):
         respuesta, fuentes, img_result = preguntar_a_dalia(prompt, imagen_b64)
 
-    # Guardar respuesta asistente
     msg_asistente = {
         "role": "assistant",
         "content": respuesta,
@@ -770,10 +670,8 @@ if enviar_btn and texto_input.strip():
         msg_asistente["image"] = img_result
     st.session_state.messages.append(msg_asistente)
 
-    # Voz
     if st.session_state.voz_activa:
         hablar(respuesta)
 
-    # Limpiar input
     st.session_state.input_texto = ""
     st.rerun()
