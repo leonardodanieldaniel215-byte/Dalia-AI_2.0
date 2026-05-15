@@ -1,6 +1,8 @@
 streamlit
 groq
-duckduckgo-search
 edge-tts
-Pillow
+duckduckgo-search
+pillow
 requests
+SpeechRecognition
+pygame
